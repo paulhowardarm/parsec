@@ -44,6 +44,27 @@ listener_type = "DomainSocket"
 # timeout expires, the connection is dropped.
 timeout = 200 # in milliseconds
 
+# (Required) Configuration for the components managing front-end authentication for requests and
+# the isolation of key stores.
+# Defined as an array of tables: https://github.com/toml-lang/toml#user-content-array-of-tables
+# The order of entries is this section is important. If multiple authenticators are configured, the
+# first entry in the list will be considered by clients to be the default method of authentication.
+# Clients will then always use that method to authenticate to the listener unless they have been
+# explicitly configured to do otherwise.
+# Note that Parsec does NOT support negotiation among the authenticator methods. If a particular
+# request fails to meet the requirements of the chosen authenticator, there is no notion of "falling
+# back" to the next authenticator in the list. The reason for supporting multiple authenticators is
+# simply that it might make sense, in some deployments, for different classes of client to authenticate
+# using different methods.
+[[authenticator]]
+# (Required) Type of authenticator.
+authenticator_type = "Direct"
+
+# Example of using Unix peer credential authentication, which can be used with the DomainSocket listener
+# type when multiple clients are segregated according to their user ID.
+#[[authenticator]]
+#authenticator_type = "UnixPeerCredential"
+
 # (Required) Configuration for the components managing key info for providers.
 # Defined as an array of tables: https://github.com/toml-lang/toml#user-content-array-of-tables
 [[key_manager]]

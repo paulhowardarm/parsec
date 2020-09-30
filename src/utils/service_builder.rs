@@ -6,7 +6,8 @@
 //! provided configuration.
 use super::global_config::GlobalConfigBuilder;
 use crate::authenticators::direct_authenticator::DirectAuthenticator;
-use crate::authenticators::Authenticate;
+use crate::authenticators::unix_peer_credentials_authenticator::UnixPeerCredentialsAuthenticator;
+use crate::authenticators::{Authenticate, AuthenticatorConfig};
 use crate::back::{
     backend_handler::{BackEndHandler, BackEndHandlerBuilder},
     dispatcher::DispatcherBuilder,
@@ -21,7 +22,7 @@ use crate::key_info_managers::on_disk_manager::{
 };
 use crate::key_info_managers::{KeyInfoManagerConfig, KeyInfoManagerType, ManageKeyInfo};
 use crate::providers::{core_provider::CoreProviderBuilder, Provide, ProviderConfig};
-use log::{error, warn, LevelFilter};
+use log::{error, info, warn, LevelFilter};
 use parsec_interface::operations_protobuf::ProtobufConverter;
 use parsec_interface::requests::AuthType;
 use parsec_interface::requests::{BodyType, ProviderID};
@@ -40,12 +41,6 @@ use crate::providers::mbed_crypto_provider::MbedCryptoProviderBuilder;
 use crate::providers::pkcs11_provider::Pkcs11ProviderBuilder;
 #[cfg(feature = "tpm-provider")]
 use crate::providers::tpm_provider::TpmProviderBuilder;
-#[cfg(any(
-    feature = "mbed-crypto-provider",
-    feature = "pkcs11-provider",
-    feature = "tpm-provider"
-))]
-use log::info;
 
 const WIRE_PROTOCOL_VERSION_MINOR: u8 = 0;
 const WIRE_PROTOCOL_VERSION_MAJOR: u8 = 1;
@@ -84,6 +79,7 @@ pub struct CoreSettings {
 pub struct ServiceConfig {
     pub core_settings: CoreSettings,
     pub listener: ListenerConfig,
+    pub authenticator: Option<Vec<AuthenticatorConfig>>,
     pub key_manager: Option<Vec<KeyInfoManagerConfig>>,
     pub provider: Option<Vec<ProviderConfig>>,
 }
@@ -129,11 +125,13 @@ impl ServiceBuilder {
             return Err(Error::new(ErrorKind::InvalidData, "need one provider"));
         }
 
-        // The authenticators supported by the Parsec service.
-        // NOTE: order here is important. The order in which the elements are added here is the
-        //       order in which they will be returned to any client requesting them!
-        let mut authenticators: Vec<(AuthType, Authenticator)> = Vec::new();
-        authenticators.push((AuthType::Direct, Box::from(DirectAuthenticator {})));
+        // Build authenticators based on configuration. The function below will always return a vector with
+        // at least one entry, because if no authenticators are specified in configuration, then the system will
+        // fall back to the legacy pattern of direct authentication.
+        let authenticators = build_authenticators(
+            config.listener.listener_type,
+            config.authenticator.as_ref().unwrap_or(&Vec::new()),
+        )?;
 
         let backend_handlers = build_backend_handlers(providers, &authenticators)?;
 
@@ -219,6 +217,63 @@ fn build_backend_handlers(
     let _ = map.insert(ProviderID::Core, core_provider_backend);
 
     Ok(map)
+}
+
+fn build_authenticators(
+    listener_type: ListenerType,
+    configs: &[AuthenticatorConfig],
+) -> Result<Vec<(AuthType, Authenticator)>> {
+    let mut list: Vec<(AuthType, Authenticator)> = Vec::new();
+
+    // Build authenticators from configuration entries in turn. Note that the order of these entries is
+    // important. The ListAuthenticators operation will return them in this order, which is considered to
+    // be preferential from the perspective of the client. The client will choose the entry at the head of
+    // this list when deciding how to authenticate, unless explicit overrides are given.
+    for config in configs {
+        let auth_type = config.auth_type();
+        if list.iter().any(|(auth, _)| *auth == auth_type) {
+            warn!("Parsec currently only supports one instance of each authenticator type. Ignoring type {:?} and continuing...", auth_type);
+            continue;
+        }
+
+        match config {
+            AuthenticatorConfig::Direct { .. } => {
+                info!("Adding direct authentication.");
+                list.push((AuthType::Direct, Box::from(DirectAuthenticator {})))
+            }
+            AuthenticatorConfig::UnixPeerCredential { .. } => {
+                if listener_type == ListenerType::DomainSocket {
+                    info!("Adding peer credential authentication (supported with DomainSocket listener).");
+                    list.push((
+                        AuthType::PeerCredentials,
+                        Box::from(UnixPeerCredentialsAuthenticator {}),
+                    ))
+                } else {
+                    error!(
+                        "Configuration specifies peer credential auth, which cannot be used with a {:?} listener.",
+                        listener_type
+                    );
+                    return Err(Error::new(
+                        ErrorKind::InvalidData,
+                        "Authentication incompatible with listener type.",
+                    ));
+                }
+            }
+        }
+    }
+
+    if list.is_empty() {
+        warn!("No authenticators specified in configuration file. Using legacy direct authentication only.");
+        list.push((AuthType::Direct, Box::from(DirectAuthenticator {})));
+    } else if list.len() > 1 {
+        error!("Multiple authentication methods not supported in current deployments.");
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            "Multiple authenticators not currently supported.",
+        ));
+    }
+
+    Ok(list)
 }
 
 fn build_providers(

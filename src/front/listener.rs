@@ -16,7 +16,7 @@ pub trait ReadWrite: std::io::Read + std::io::Write {}
 impl<T: std::io::Read + std::io::Write> ReadWrite for T {}
 
 /// Type of the Listener used
-#[derive(Copy, Clone, Deserialize, Debug)]
+#[derive(Copy, Clone, Deserialize, Debug, PartialEq)]
 pub enum ListenerType {
     /// Listener using Unix Domain Socket
     DomainSocket,

@@ -16,11 +16,40 @@ pub mod unix_peer_credentials_authenticator;
 use crate::front::listener::ConnectionMetadata;
 use parsec_interface::operations::list_authenticators;
 use parsec_interface::requests::request::RequestAuth;
+use parsec_interface::requests::AuthType;
 use parsec_interface::requests::Result;
+
+use serde::Deserialize;
+use zeroize::Zeroize;
 
 /// String wrapper for app names
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct ApplicationName(String);
+
+/// Authenticator configuration structure
+/// For authenticator configs in Parsec config.toml we use a format similar
+/// to the one described in the Internally Tagged Enum representation
+/// where "provider_type" is the tag field. For details see:
+/// https://serde.rs/enum-representations.html
+#[derive(Deserialize, Debug, Zeroize, Copy, Clone)]
+#[zeroize(drop)]
+#[serde(tag = "authenticator_type")]
+pub enum AuthenticatorConfig {
+    /// Direct authenticator configuration
+    Direct {},
+    /// Unix Peer Credential authenticator configuration
+    UnixPeerCredential {},
+}
+
+impl AuthenticatorConfig {
+    /// Get the corresponding AuthType for the configuration
+    pub fn auth_type(&self) -> AuthType {
+        match *self {
+            AuthenticatorConfig::Direct { .. } => AuthType::Direct,
+            AuthenticatorConfig::UnixPeerCredential { .. } => AuthType::PeerCredentials,
+        }
+    }
+}
 
 /// Authentication interface
 ///
